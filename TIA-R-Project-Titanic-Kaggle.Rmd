@@ -1,0 +1,248 @@
+---
+title: "TIA R Course Project: Titanic RF Model with Basic Feature Engineering"
+author: "Brian Choi"
+date: "June 16, 2019"
+output:
+  html_document:
+    number_sections: true
+    toc: true
+---
+
+This is my capstone project for The Infinite Actuary R course. I had some R experience from my work, but did not
+have chance to use machine learning libraries. The course exposed me to common data cleaning techniques, visualizations, and couple of basic ML libraries which I will be utilizing below. Since I decided to focus on Python over R, I will be revisiting this competition with Python and do more in-depth analysis in the coming weeks!
+
+Please check out my <strong>LinkedIn article on the road map for learning DS with Python as an actuary</strong> [(link)](https://www.linkedin.com/pulse/learning-data-science-actuary-resources-reviews-my-brian), especially if you are also working in actuarial field/insurance industry!
+
+<strong>About the model:</strong>
+
+In this R markdown model, I do basic level of <strong>feature engineering</strong> on missing Ages using title extracted from the name variable. Based on what we know about the incident (probably from the movie!), sex and age were two important factors in survival. Women and children were prioritized for lifeboats. It made sense to me that addressing missing age variable would increase performance of any models. I chose <strong>Random Forest</strong> model for this classification problem.
+
+
+# Load Libraries and Read in Input Data
+```{r echo=TRUE, warning=TRUE}
+library(randomForest)
+library(ggplot2)
+library(stringr)
+
+set.seed(917)
+
+ti_train <- read.csv("TIA_Proj5/train.csv", na.strings=c("")) #for local machine
+ti_test  <- read.csv("TIA_Proj5/test.csv", na.strings=c("")) #for local machine
+
+#ti_train <- read.csv("../input/train.csv", na.strings=c("")) #for Kaggle kernel
+#ti_test  <- read.csv("../input/test.csv", na.strings=c("")) #for Kaggle kernel
+```
+
+## Examine Variable Types and Look for Missing Values
+```{r}
+head(ti_train)
+summary(ti_train)
+str(ti_train)
+```
+
+Class, Survived, PassengerID should be factors.  
+Cabin is mostly NA. Cabin and Ticket won't be good predictors.
+
+```{r}
+head(ti_test)
+summary(ti_test)
+str(ti_test)
+```
+
+## Combine Training Set and Test Set Before Cleaning Data
+```{r}
+ti_train$IsTrainSet <- T
+ti_test$IsTrainSet <- F
+
+ti_test$Survived <- NA
+
+ti_combined <- rbind(ti_train, ti_test)
+```
+
+# Impute Missing Values and Perform Feature Engineering
+```{r}
+table(is.na(ti_combined$Age))
+```
+There are 263 missings ages!  
+We will use feature engineering to impute missing ages
+
+```{r}
+g <- ggplot(data=ti_combined, aes(x=Age)) + geom_histogram(binwidth = 10, fill = "lightgreen", color = "Black")
+g
+```
+    
+Age distribution of whole dataset shows some kid + a lot of 20-40s, and less older people
+
+## Get Title Variable Out of Name Variable
+```{r}
+ti_combined$Title <- str_sub(ti_combined$Name,
+                             str_locate(ti_combined$Name, ",")[ , 1] + 2,
+                             str_locate(ti_combined$Name, "\\.")[ , 1] - 1)
+
+table(ti_combined$Title)
+```
+  
+Most common titles are Mr, Mrs, Miss, and Master.
+The goal is to impute missing ages from title. It would be better to group rare titles to more common ones.
+
+```{r}
+g <- ggplot(data=ti_combined, aes(x=Sex,fill=Sex)) + geom_bar()+ facet_wrap(Title~.)
+g
+```
+  
+I Wanted to see gender distribution by each title but that didn't work well!  
+Filter for uncommon titles only to get better scale of graphs.
+
+```{r}
+ti_minor_title <- ti_combined[ti_combined$Title != 'Mr' &
+                                ti_combined$Title != 'Mrs' &
+                                ti_combined$Title != 'Miss' &
+                                ti_combined$Title != 'Master',]
+
+g <- ggplot(data=ti_minor_title, aes(x=Sex,fill=Sex)) + geom_bar()+ facet_wrap(Title~.)
+g
+
+g <- ggplot(data=ti_minor_title, aes(x=Age,fill=Sex)) + geom_histogram(bins = 10)+ facet_wrap(Title~.)
+g
+```
+  
+We these two plots. Now we have general idea of age/sex of person holding each title.  
+Based on the distribution of Age,Sex and wikipedia info on old titles, I group them into major title categories.
+
+## Group Uncommon Titles into Common Titles
+```{r}
+Mr_title_list <- c("Capt", "Col", "Don", "Dr", "Jonkheer", "Major", "Rev", "Sir")
+Mrs_title_list <- c("Dona", "Lady", "the Countess", "Mme")
+Miss_title_list <- c("Ms", "Mlle")
+Master_title_list <- c()
+
+ti_combined[ti_combined$Title %in% Mr_title_list, "Title"] <- "Mr"
+ti_combined[ti_combined$Title %in% Mrs_title_list, "Title"] <- "Mrs"
+ti_combined[ti_combined$Title %in% Miss_title_list, "Title"] <- "Miss"
+ti_combined[ti_combined$Title %in% Master_title_list, "Title"] <- "Master"
+
+table(ti_combined$Title)
+
+g <- ggplot(data=ti_combined, aes(x=Age)) + geom_density(fill = "lightgreen") + facet_wrap(Title~.)
+g
+```
+  
+Looks good. Notice that all of them are right skewed to some degree.
+For the purpose of impute, I will use median age of each title over mean.
+
+## Use Median Age of Each Title for Missing Ages
+```{r}
+Mr_Median <- median(ti_combined[ti_combined$Title == "Mr", "Age"], na.rm = TRUE)
+Mrs_Median <- median(ti_combined[ti_combined$Title == "Mrs", "Age"], na.rm = TRUE)
+Miss_Median <- median(ti_combined[ti_combined$Title == "Miss", "Age"], na.rm = TRUE)
+Master_Median <- median(ti_combined[ti_combined$Title == "Master", "Age"], na.rm = TRUE)
+
+Median_By_Title <- data.frame("Title" = c("Mr", "Mrs", "Miss", "Master"),
+                              "Median_Age" = c(Mr_Median,Mrs_Median,Miss_Median,Master_Median))        
+Median_By_Title
+g <- ggplot(data=Median_By_Title, aes(x=Title, y=Median_Age)) + geom_bar(stat = 'identity', fill = 'lightblue')
+g
+```
+  
+Median age for each title. These will be used if someone's age is missing.
+
+
+Now fill in NA Ages
+```{r}
+ti_combined[is.na(ti_combined$Age) & ti_combined$Title == "Mr", "Age"] <- Mr_Median
+ti_combined[is.na(ti_combined$Age) & ti_combined$Title == "Mrs", "Age"] <- Mrs_Median
+ti_combined[is.na(ti_combined$Age) & ti_combined$Title == "Miss", "Age"] <- Miss_Median
+ti_combined[is.na(ti_combined$Age) & ti_combined$Title == "Master", "Age"] <- Master_Median
+
+summary(ti_combined)
+```
+  
+Confirmed there are no more missing values
+
+```{r}
+g <- ggplot(data=ti_combined, aes(x=Age)) + geom_density(fill = "lightgreen") + facet_wrap(Title~.)
+g
+```
+  
+As expected, I can see peaks at median value. There could be better model to handle missing ages, but
+I will keep it simple for this project.
+
+## Handle other missing values and change data types
+
+I will do very simple impute method for other missing values and also change data type to more appropriate ones.
+For Embarked, there are 2 NAs. I use mode value "S"
+
+```{r}
+ti_combined[is.na(ti_combined$Embarked),"Embarked"] <- "S"
+```
+
+One fare is missing. Use median for missing value.
+
+```{r}
+ti_combined[is.na(ti_combined$Fare),"Fare"] <- median(ti_combined$Fare, na.rm = TRUE)
+```
+
+```{r}
+summary(ti_combined)
+str(ti_combined)
+```
+
+Everything looks okay now except data types. Convert categorical variables to factors.
+```{r}
+ti_combined$PassengerId <- as.factor(ti_combined$PassengerId)
+ti_combined$Survived <- as.factor(ti_combined$Survived)
+ti_combined$Pclass <- as.factor(ti_combined$Pclass)
+ti_combined$Title <- as.factor(ti_combined$Title)
+```
+
+We are done with cleaning data. Now split data to training and test set.
+```{r}
+ti_train2 <- ti_combined[ti_combined$IsTrainSet == TRUE,]
+ti_test2 <- ti_combined[ti_combined$IsTrainSet == FALSE,]
+```
+
+
+# Running Random Forest Model
+
+I decided to leave out Title variable because it probably has a lot of interaction effect with sex and age.
+
+```{r}
+survived.equation <- "Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked"
+survived.formula <- as.formula(survived.equation)
+
+Titanic_RF <- randomForest(formula=survived.formula,
+                           data = ti_train2,
+                           ntree = 500,
+                           mtry = 3,
+                           nodesize = 0.01*nrow(ti_train2),
+                           importance=TRUE)
+
+Titanic_RF
+```
+
+Error rate on the training set is 15.82%. Not bad for the first try!
+
+```{r}
+plot(Titanic_RF)
+```
+
+It looks like there won't be much gain by increasing number of trees. I will stick with the default.
+
+```{r}
+varImpPlot(Titanic_RF)
+```
+
+As expected, sex and age are strong predictors. Fare and Pclass also have significance. If I were to use
+logistic regression or GLM for insurance pricing, I would start with these variables first.
+
+# Write Output File for Kaggle Submission
+```{r}
+Survived <- predict(Titanic_RF,newdata=ti_test2)
+
+PassengerId <- ti_test2$PassengerId
+output.df <- as.data.frame(PassengerId)
+output.df$Survived <- Survived
+write.csv(output.df,"titanic_kaggle_submission_kernel.csv",row.names = FALSE)
+```
+
+Thank you for reviewing my code!
